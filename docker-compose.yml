@@ -144,6 +144,10 @@ services:
       - "8050:8050"
     env_file:
       - .env
+    depends_on:
+      - pedido
+      - pagamento
+      - logistica
     restart: on-failure
 
 volumes:

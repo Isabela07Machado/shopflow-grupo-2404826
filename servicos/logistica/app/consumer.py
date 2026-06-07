@@ -93,7 +93,7 @@ def processar_evento(evento_dict: dict) -> None:
         envelope = EnvelopeEvento.model_validate(evento_dict)
     except ValidationError as erro:
         logger.error("[logistica] Envelope inválido descartado: %s", erro)
-        registrar_evento(db, None, "invalido", None, "consumido", valido=False)
+        registrar_evento(db, None, "invalido", None, "descartado", valido=False)
         db.commit()
         return
 
@@ -167,7 +167,7 @@ def processar_evento(evento_dict: dict) -> None:
             envelope.evento_id,
             envelope.evento_tipo,
             envelope.correlation_id,
-            "consumido",
+            "descartado",
             valido=False,
         )
         marcar_evento_processado(db, envelope.evento_id)

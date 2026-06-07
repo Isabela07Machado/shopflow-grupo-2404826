@@ -15,6 +15,7 @@ from database import (
 )
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from metrics import obter_metrics
 from producer import publicar_pedido_criado
 from schemas import PedidoCreate, PedidoResponse
 
@@ -78,6 +79,15 @@ def startup():
 @app.get("/health")
 def health():
     return {"status": "ok", "servico": "pedido"}
+
+
+@app.get("/metrics")
+def metrics():
+    db = get_db()
+    try:
+        return obter_metrics(db)
+    finally:
+        db.close()
 
 
 @app.get("/")

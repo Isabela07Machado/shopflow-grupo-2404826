@@ -3,9 +3,10 @@ import os
 import threading
 
 from consumer import iniciar_consumer
-from database import init_db
+from database import get_db, init_db
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from metrics import obter_metrics
 
 load_dotenv()
 
@@ -29,6 +30,15 @@ def startup():
 @app.get("/health")
 def health():
     return {"status": "ok", "servico": "pagamento"}
+
+
+@app.get("/metrics")
+def metrics():
+    db = get_db()
+    try:
+        return obter_metrics(db)
+    finally:
+        db.close()
 
 
 @app.get("/")

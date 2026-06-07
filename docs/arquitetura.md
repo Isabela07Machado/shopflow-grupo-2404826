@@ -199,11 +199,72 @@ Nenhum serviço acessa o banco de outro — a comunicação é exclusivamente po
 
 ## 10. Dashboard (Módulo 4)
 
-O dashboard Streamlit (porta 8050) permanece inicial no Módulo 3. No **Módulo 4** será enriquecido com métricas, listagem de pedidos e monitoramento em tempo real.
+O **dashboard Streamlit** (porta 8050) é a interface visual do projeto. Ele consulta os microsserviços via HTTP — **nunca acessa os bancos PostgreSQL diretamente**.
 
-## 11. Evolução no Módulo 4
+### Por que não acessar o banco diretamente?
 
-- Dashboard completo com métricas e status dos pedidos
-- Observabilidade (logs centralizados, tracing)
+Cada microsserviço possui banco isolado (**database per service**). O dashboard respeita essa fronteira consultando apenas:
+
+| Endpoint | Finalidade |
+|----------|------------|
+| `GET /health` | Status operacional |
+| `GET /metrics` | Métricas, KPIs e dados agregados |
+
+### URLs internas (Docker)
+
+| Serviço | URL |
+|---------|-----|
+| Pedido | `http://pedido:8001` |
+| Pagamento | `http://pagamento:8002` |
+| Logística | `http://logistica:8003` |
+
+### Abas do dashboard
+
+**Aba 1 — Saúde dos Serviços**
+- Status 🟢 OK / 🔴 Fora de cada serviço
+- Total de eventos publicados
+- Taxa de erro por schema inválido
+- Últimos 10 eventos combinados
+
+**Aba 2 — Comunicação ao Vivo**
+- Gráfico de throughput (eventos/minuto nos últimos 10 min)
+- Tabela dos 50 pedidos mais recentes com indicadores de status
+- Contadores: criados, confirmados, cancelados, entregues
+
+**Aba 3 — KPIs de Negócio**
+- GMV (Gross Merchandise Value)
+- Taxa de aprovação de pagamentos
+- Taxa de conversão (confirmados / criados)
+- Taxa de bloqueio antifraude
+- Pedidos entregues no prazo (%)
+- Gráfico histórico de GMV por hora
+- Filtro de período: última hora, último dia, total
+
+O dashboard atualiza automaticamente a cada 5 segundos.
+
+### Endpoints expostos pelos serviços
+
+| Serviço | Endpoints |
+|---------|-----------|
+| Pedido | `GET /health`, `GET /metrics`, `POST /pedidos`, `GET /pedidos/{id}` |
+| Pagamento | `GET /health`, `GET /metrics` |
+| Logística | `GET /health`, `GET /metrics` |
+
+## 11. Registro de eventos para métricas
+
+Cada serviço registra eventos na tabela `eventos`:
+
+| direcao | Significado |
+|---------|-------------|
+| `publicado` | Evento publicado no RabbitMQ |
+| `consumido` | Evento recebido e processado com sucesso |
+| `descartado` | Evento inválido (schema) — descartado sem derrubar o serviço |
+
+Esses registros alimentam `/metrics`: eventos publicados, taxa de erro, últimos eventos e throughput.
+
+## 12. Evolução futura
+
+- Observabilidade avançada (tracing distribuído)
+- Dead letter queues
 - Testes automatizados de integração
-- Melhorias de resiliência (dead letter queues, retry policies)
+- Roteiro de vídeo de demonstração (Módulo 5)

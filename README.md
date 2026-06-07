@@ -4,7 +4,7 @@ Marketplace fictício com microsserviços e arquitetura orientada a eventos.
 
 ## Descrição
 
-O **ShopFlow** simula um e-commerce moderno dividido em serviços independentes. A comunicação entre eles acontece por **eventos** usando **RabbitMQ** como broker de mensagens. Este repositório contém a infraestrutura do **Módulo 2** e o fluxo completo de eventos do **Módulo 3**.
+O **ShopFlow** simula um e-commerce moderno dividido em serviços independentes. A comunicação entre eles acontece por **eventos** usando **RabbitMQ** como broker de mensagens. Este repositório contém a infraestrutura do **Módulo 2**, o fluxo completo de eventos do **Módulo 3** e o **dashboard dinâmico** do **Módulo 4**.
 
 ## Tecnologias usadas
 
@@ -83,6 +83,9 @@ docker-compose down
 | Pagamento (health) | http://localhost:8002/health |
 | Logística (health) | http://localhost:8003/health |
 | Dashboard Streamlit | http://localhost:8050 |
+| Pedido (metrics) | http://localhost:8001/metrics |
+| Pagamento (metrics) | http://localhost:8002/metrics |
+| Logística (metrics) | http://localhost:8003/metrics |
 | RabbitMQ Management | http://localhost:15672 |
 
 ### Login do RabbitMQ
@@ -212,6 +215,69 @@ git tag modulo-3
 git push origin main --tags
 ```
 
+## Módulo 4 — Dashboard
+
+O **Módulo 4** adiciona um dashboard visual e dinâmico em **http://localhost:8050** com 3 abas.
+
+### Arquitetura do dashboard
+
+O dashboard **não acessa os bancos PostgreSQL** diretamente. Ele consulta os microsserviços via HTTP:
+
+- `GET /health` — status operacional
+- `GET /metrics` — métricas e KPIs
+
+Dentro do Docker, o dashboard usa:
+
+- `http://pedido:8001`
+- `http://pagamento:8002`
+- `http://logistica:8003`
+
+### Abas do dashboard
+
+1. **Saúde dos Serviços** — status OK/Fora, eventos publicados, taxa de erro, últimos 10 eventos
+2. **Comunicação ao Vivo** — throughput por minuto, tabela de pedidos recentes, contadores
+3. **KPIs de Negócio** — GMV, taxa de aprovação, conversão, bloqueio antifraude, entregues no prazo, gráfico GMV/hora
+
+O dashboard atualiza automaticamente a cada **5 segundos** (`streamlit-autorefresh`).
+
+### Como ver os números mudarem
+
+1. Suba o projeto: `docker compose up --build`
+2. Em outro terminal, rode o gerador:
+
+```bash
+python gerador/gerar.py --total 30 --taxa 2
+```
+
+3. Abra http://localhost:8050 e observe os contadores e gráficos atualizando
+
+### Como validar os KPIs
+
+| KPI | Onde verificar |
+|-----|----------------|
+| GMV | Aba 3 — soma dos pedidos confirmados |
+| Taxa de aprovação | Aba 3 — dados do serviço Pagamento |
+| Taxa de conversão | Aba 3 — confirmados / criados |
+| Bloqueio antifraude | Aba 3 — cancelados por fraude |
+| Entregues no prazo | Aba 3 — dados do serviço Logística |
+
+### Como criar a tag modulo-4
+
+```bash
+git add .
+git commit -m "modulo-4: dashboard"
+git tag modulo-4
+git push origin main --tags
+```
+
+Se a tag já existir localmente:
+
+```bash
+git tag -d modulo-4
+git tag modulo-4
+git push origin main --tags
+```
+
 ## Comandos Git para entrega (Módulo 2)
 
 ```bash
@@ -223,4 +289,4 @@ git push origin main --tags
 
 ## Documentação adicional
 
-Consulte [docs/arquitetura.md](docs/arquitetura.md) para entender a arquitetura completa, os eventos e a evolução prevista no Módulo 3.
+Consulte [docs/arquitetura.md](docs/arquitetura.md) para entender a arquitetura completa, os eventos, o dashboard e os KPIs.
