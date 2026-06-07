@@ -288,5 +288,4 @@ git push origin main --tags
 ```
 
 ## Documentação adicional
-
 Consulte [docs/arquitetura.md](docs/arquitetura.md) para entender a arquitetura completa, os eventos, o dashboard e os KPIs.
