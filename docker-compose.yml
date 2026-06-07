@@ -1,0 +1,152 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: shopflow-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    env_file:
+      - .env
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pedido-db:
+    image: postgres:15-alpine
+    container_name: shopflow-pedido-db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pedido
+    volumes:
+      - pedido_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pedido"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pagamento-db:
+    image: postgres:15-alpine
+    container_name: shopflow-pagamento-db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pagamento
+    volumes:
+      - pagamento_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pagamento"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  logistica-db:
+    image: postgres:15-alpine
+    container_name: shopflow-logistica-db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: logistica
+    volumes:
+      - logistica_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d logistica"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pedido:
+    build:
+      context: ./servicos/pedido
+    container_name: shopflow-pedido
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pedido-db:
+        condition: service_healthy
+    restart: on-failure
+
+  pagamento:
+    build:
+      context: ./servicos/pagamento
+    container_name: shopflow-pagamento
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pagamento-db:
+        condition: service_healthy
+    restart: on-failure
+
+  logistica:
+    build:
+      context: ./servicos/logistica
+    container_name: shopflow-logistica
+    ports:
+      - "8003:8003"
+    env_file:
+      - .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      logistica-db:
+        condition: service_healthy
+    restart: on-failure
+
+  mock-antifraude:
+    build:
+      context: ./mocks
+    container_name: shopflow-mock-antifraude
+    command: python mock_antifraude.py
+    env_file:
+      - .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
+  mock-catalogo:
+    build:
+      context: ./mocks
+    container_name: shopflow-mock-catalogo
+    command: python mock_catalogo.py
+    env_file:
+      - .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
+  dashboard:
+    build:
+      context: ./dashboard
+    container_name: shopflow-dashboard
+    ports:
+      - "8050:8050"
+    env_file:
+      - .env
+    restart: on-failure
+
+volumes:
+  pedido_data:
+  pagamento_data:
+  logistica_data:
