@@ -1,11 +1,29 @@
+import logging
 import os
+import threading
 
+from consumer import iniciar_consumer
+from database import init_db
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
 load_dotenv()
 
-app = FastAPI(title="ShopFlow - Pagamento", version="1.0.0")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="ShopFlow - Pagamento", version="2.0.0")
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
+    thread = threading.Thread(target=iniciar_consumer, daemon=True)
+    thread.start()
+    logger.info("[pagamento] Serviço iniciado — consumer em thread separada")
 
 
 @app.get("/health")

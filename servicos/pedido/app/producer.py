@@ -1,64 +1,40 @@
 """
-Esqueleto do produtor de eventos do serviço de Pedido.
-
-No Módulo 3 este módulo publicará eventos como pedido.criado e pedido.confirmado
-na exchange pedido.eventos via RabbitMQ.
+Produtor de eventos do serviço de Pedido.
 """
 
-import os
-
-import pika
-from dotenv import load_dotenv
+from datetime import datetime, timezone
 
 from models import EnvelopeEvento
-
-load_dotenv()
+from rabbitmq import publicar
 
 EXCHANGE_PEDIDO = "pedido.eventos"
 
 
-def obter_parametros_conexao() -> pika.ConnectionParameters:
-    """Retorna parâmetros de conexão com o broker RabbitMQ."""
-    credenciais = pika.PlainCredentials(
-        os.getenv("RABBITMQ_DEFAULT_USER", "guest"),
-        os.getenv("RABBITMQ_DEFAULT_PASS", "guest"),
-    )
-    return pika.ConnectionParameters(
-        host=os.getenv("BROKER_HOST", "rabbitmq"),
-        port=int(os.getenv("BROKER_PORT", "5672")),
-        credentials=credenciais,
-    )
-
-
-def declarar_exchange(channel: pika.channel.Channel) -> None:
-    """Declara a exchange de eventos do serviço de pedido."""
-    channel.exchange_declare(
-        exchange=EXCHANGE_PEDIDO,
-        exchange_type="topic",
-        durable=True,
-    )
+def _iso_agora() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def publicar_evento(
-    channel: pika.channel.Channel,
-    routing_key: str,
-    envelope: EnvelopeEvento,
-) -> None:
-    """Publica um evento no formato de envelope padrão."""
-    channel.basic_publish(
-        exchange=EXCHANGE_PEDIDO,
-        routing_key=routing_key,
-        body=envelope.model_dump_json(),
-        properties=pika.BasicProperties(
-            content_type="application/json",
-            delivery_mode=2,
-        ),
+    evento_tipo: str,
+    correlation_id: str,
+    payload: dict,
+) -> EnvelopeEvento:
+    envelope = EnvelopeEvento(
+        evento_tipo=evento_tipo,
+        correlation_id=correlation_id,
+        payload=payload,
     )
+    publicar(EXCHANGE_PEDIDO, evento_tipo, envelope.model_dump())
+    return envelope
 
 
-def criar_canal() -> tuple[pika.BlockingConnection, pika.channel.Channel]:
-    """Abre conexão e canal com o RabbitMQ, declarando a exchange."""
-    conexao = pika.BlockingConnection(obter_parametros_conexao())
-    canal = conexao.channel()
-    declarar_exchange(canal)
-    return conexao, canal
+def publicar_pedido_criado(correlation_id: str, payload: dict) -> EnvelopeEvento:
+    return publicar_evento("pedido.criado", correlation_id, payload)
+
+
+def publicar_pedido_confirmado(correlation_id: str, payload: dict) -> EnvelopeEvento:
+    return publicar_evento("pedido.confirmado", correlation_id, payload)
+
+
+def publicar_pedido_cancelado(correlation_id: str, payload: dict) -> EnvelopeEvento:
+    return publicar_evento("pedido.cancelado", correlation_id, payload)

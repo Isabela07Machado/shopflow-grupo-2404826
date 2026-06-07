@@ -5,128 +5,205 @@
 O **ShopFlow** é um marketplace fictício construído com **microsserviços** e **arquitetura orientada a eventos**. Cada serviço é responsável por uma parte do fluxo de compra e se comunica de forma assíncrona por meio do **RabbitMQ**.
 
 ```
-Cliente / Dashboard
+Cliente / Gerador
         |
-        v
-+------------------+     eventos      +------------------+
-|  Serviço Pedido  | <--------------> |     RabbitMQ     |
-+------------------+                  +------------------+
-        |                                      ^
-        v                                      |
-+------------------+                           |
-| Serviço Pagamento| <-------------------------+
-+------------------+
-        |
-        v
-+------------------+
-|Serviço Logística |
-+------------------+
-
-Mocks: Antifraude e Catálogo (simulam serviços externos)
+        v  POST /pedidos
++------------------+     pedido.criado      +------------------+
+|  Serviço Pedido  | ---------------------> |     RabbitMQ     |
+|   (orquestrador) | <--------------------- |   (topic ex.)    |
++------------------+   pagamento/antifraude  +------------------+
+        |                    |                      |
+        | pedido.confirmado  |                      |
+        v                    v                      v
++------------------+  +-------------+    +------------------+
+|Serviço Logística |  |  Pagamento  |    | Mock Antifraude  |
++------------------+  +-------------+    +------------------+
+        |                                        |
+        | pedido.despachado/entregue             | (paralelo)
+        v                                        v
++------------------+                    +------------------+
+|  Serviço Pedido  |                    | Mock Catálogo    |
+| (atualiza status)|                    | estoque.atualizado|
++------------------+                    +------------------+
 ```
 
-No **Módulo 2**, o foco é a infraestrutura: containers Docker, bancos PostgreSQL separados, broker de mensagens, endpoints de saúde (`/health`) e mocks básicos aguardando eventos.
+No **Módulo 3**, o fluxo ponta a ponta está implementado: criar um pedido dispara automaticamente toda a cadeia de eventos.
 
 ## 2. Por que RabbitMQ?
 
-O **RabbitMQ** foi escolhido porque:
+O **RabbitMQ** foi escolhido no Módulo 1 e é a decisão permanente do projeto porque:
 
-- Suporta o padrão **publish/subscribe** com exchanges do tipo **topic**, ideal para roteamento por tipo de evento (ex.: `pedido.criado`).
-- Garante **desacoplamento** entre serviços: quem publica não precisa conhecer quem consome.
-- Oferece **painel de gerenciamento** (porta 15672) para visualizar filas, exchanges e mensagens durante o desenvolvimento.
-- É amplamente usado em projetos acadêmicos e profissionais, com boa documentação e integração com Python via biblioteca **pika**.
+- Suporta **publish/subscribe** com exchanges **topic**, roteando por tipo de evento (`pedido.criado`, `pagamento.aprovado`, etc.).
+- **Desacopla** serviços: o Pedido não chama Pagamento via HTTP — ambos reagem a eventos.
+- Oferece **painel de gerenciamento** (porta 15672) para inspecionar filas e mensagens.
+- Integra com Python via **pika**, usado em todos os serviços e mocks.
 
-## 3. Função de cada serviço
+## 3. Fluxo ponta a ponta (Módulo 3)
 
-| Serviço | Tipo | Responsabilidade |
-|---------|------|------------------|
-| **Pedido** | Real (FastAPI) | Criar pedidos, confirmar compras e orquestrar o fluxo principal |
-| **Pagamento** | Real (FastAPI) | Processar cobranças e informar aprovação ou recusa |
-| **Logística** | Real (FastAPI) | Despachar e registrar entrega dos pedidos |
-| **Antifraude** | Mock | Simular análise de risco após criação do pedido |
-| **Catálogo** | Mock | Simular atualização de estoque após confirmação |
+```
+POST /pedidos
+    │
+    ▼
+pedido.criado ──────────────┬──────────────────────┐
+    │                       │                      │
+    ▼                       ▼                      ▼
+Mock Antifraude      Serviço Pagamento      (Pedido aguarda)
+    │                       │
+    ▼                       ▼
+pedido.aprovado_fraude   pagamento.aprovado
+ou bloqueado_fraude      ou pagamento.recusado
+    │                       │
+    └───────────┬───────────┘
+                ▼
+        Serviço Pedido (saga)
+                │
+    ┌───────────┴───────────┐
+    ▼                       ▼
+pedido.confirmado      pedido.cancelado
+    │
+    ├──────────────────────────────┐
+    ▼                              ▼
+Serviço Logística            Mock Catálogo
+    │                              │
+    ▼                              ▼
+pedido.despachado            estoque.atualizado
+    │ (5–15 segundos)
+    ▼
+pedido.entregue
+    │
+    ▼
+Serviço Pedido atualiza status → entregue
+```
 
-## 4. Eventos publicados e consumidos
+## 4. correlation_id
 
-### Pedido (`pedido.eventos`)
+O `correlation_id` é um **UUID gerado na criação do pedido** e copiado para **todos os eventos** daquele fluxo. Isso permite:
 
-| Evento | Publica | Consome |
-|--------|---------|---------|
-| `pedido.criado` | Pedido | Antifraude (mock) |
-| `pedido.confirmado` | Pedido | Catálogo (mock) |
-| `pedido.cancelado` | Pedido | — |
+- Rastrear um pedido nos logs de todos os serviços
+- Correlacionar mensagens no RabbitMQ Management
+- Implementar a saga no serviço de Pedido (busca pedido por `correlation_id`)
 
-### Pagamento (`pagamento.eventos`)
+Exemplo nos logs:
 
-| Evento | Publica | Consome |
-|--------|---------|---------|
-| `pagamento.aprovado` | Pagamento | Logística |
-| `pagamento.recusado` | Pagamento | Pedido |
+```
+[pedido] pedido.criado publicado correlation_id=abc-123
+[pagamento] pagamento.aprovado publicado correlation_id=abc-123
+[antifraude] pedido.aprovado_fraude publicado correlation_id=abc-123
+```
 
-### Logística (`logistica.eventos`)
+## 5. Saga (orquestração no serviço Pedido)
 
-| Evento | Publica | Consome |
-|--------|---------|---------|
-| `pedido.despachado` | Logística | Pedido |
-| `pedido.entregue` | Logística | Pedido |
+O serviço de **Pedido** é o orquestrador. Ele mantém flags `pagamento_ok` e `fraude_ok` no banco:
 
-### Antifraude (`antifraude.eventos`)
+| Evento recebido | Ação |
+|-----------------|------|
+| `pagamento.aprovado` | `pagamento_ok = true`; se `fraude_ok = true` → confirma |
+| `pagamento.recusado` | `pagamento_ok = false` → cancela |
+| `pedido.aprovado_fraude` | `fraude_ok = true`; se `pagamento_ok = true` → confirma |
+| `pedido.bloqueado_fraude` | `fraude_ok = false` → cancela |
+| `pedido.despachado` | status = despachado |
+| `pedido.entregue` | status = entregue |
 
-| Evento | Publica | Consome |
-|--------|---------|---------|
-| `pedido.aprovado_fraude` | Antifraude (mock) | Pagamento |
-| `pedido.bloqueado_fraude` | Antifraude (mock) | Pedido |
+**Regras de proteção:**
+- Não confirma duas vezes
+- Não cancela duas vezes
+- Pedido já confirmado não é cancelado depois
+- Pedido já cancelado não é confirmado depois
 
-### Catálogo (`catalogo.eventos`)
+## 6. Idempotência
 
-| Evento | Publica | Consome |
-|--------|---------|---------|
-| `estoque.atualizado` | Catálogo (mock) | — |
+Cada serviço consumidor possui a tabela `eventos_processados`:
+
+1. Recebe evento com `evento_id` único
+2. Valida envelope e payload (Pydantic)
+3. Se `evento_id` já existe → ignora e loga
+4. Se novo → processa e salva `evento_id`
+
+Isso evita processamento duplicado em caso de reentrega de mensagens.
+
+Eventos inválidos são **logados e descartados** sem derrubar o container.
+
+## 7. Função de cada serviço
+
+| Serviço | Responsabilidade |
+|---------|------------------|
+| **Pedido** | API REST, saga, publica `pedido.criado/confirmado/cancelado` |
+| **Pagamento** | Consome `pedido.criado`, cobra, publica `pagamento.aprovado/recusado` |
+| **Logística** | Consome `pedido.confirmado`, despacha e entrega |
+| **Antifraude (mock)** | Consome `pedido.criado`, simula análise de risco |
+| **Catálogo (mock)** | Consome `pedido.confirmado`, simula atualização de estoque |
+
+## 8. Eventos por serviço
+
+### Pedido
+
+| Direção | Exchange | Eventos |
+|---------|----------|---------|
+| Publica | `pedido.eventos` | `pedido.criado`, `pedido.confirmado`, `pedido.cancelado` |
+| Consome | `pagamento.eventos` | `pagamento.aprovado`, `pagamento.recusado` |
+| Consome | `antifraude.eventos` | `pedido.aprovado_fraude`, `pedido.bloqueado_fraude` |
+| Consome | `logistica.eventos` | `pedido.despachado`, `pedido.entregue` |
+
+### Pagamento
+
+| Direção | Exchange | Eventos |
+|---------|----------|---------|
+| Publica | `pagamento.eventos` | `pagamento.aprovado`, `pagamento.recusado` |
+| Consome | `pedido.eventos` | `pedido.criado` |
+
+### Logística
+
+| Direção | Exchange | Eventos |
+|---------|----------|---------|
+| Publica | `logistica.eventos` | `pedido.despachado`, `pedido.entregue` |
+| Consome | `pedido.eventos` | `pedido.confirmado` |
+
+### Mock Antifraude
+
+| Direção | Exchange | Eventos |
+|---------|----------|---------|
+| Publica | `antifraude.eventos` | `pedido.aprovado_fraude`, `pedido.bloqueado_fraude` |
+| Consome | `pedido.eventos` | `pedido.criado` |
+
+### Mock Catálogo
+
+| Direção | Exchange | Eventos |
+|---------|----------|---------|
+| Publica | `catalogo.eventos` | `estoque.atualizado` |
+| Consome | `pedido.eventos` | `pedido.confirmado` |
 
 ### Envelope padrão
-
-Todos os eventos seguem o mesmo formato:
 
 ```json
 {
   "evento_id": "uuid-v4",
-  "evento_tipo": "pedido.aprovado_fraude",
+  "evento_tipo": "pedido.criado",
   "timestamp": "2025-06-01T14:32:18.000Z",
-  "correlation_id": "uuid-do-pedido",
+  "correlation_id": "uuid-do-fluxo",
   "versao_schema": "1.0",
   "payload": {}
 }
 ```
 
-## 5. Bancos de dados separados por serviço
+## 9. Bancos de dados separados
 
-Cada serviço real possui seu próprio banco **PostgreSQL**, seguindo o princípio de **database per service**:
+Cada serviço real possui banco PostgreSQL próprio (**database per service**):
 
-| Container | Database | URL (dentro do Docker) |
-|-----------|----------|------------------------|
-| `pedido-db` | `pedido` | `postgresql://postgres:postgres@pedido-db:5432/pedido` |
-| `pagamento-db` | `pagamento` | `postgresql://postgres:postgres@pagamento-db:5432/pagamento` |
-| `logistica-db` | `logistica` | `postgresql://postgres:postgres@logistica-db:5432/logistica` |
+| Serviço | Container DB | Tabelas principais |
+|---------|--------------|-------------------|
+| Pedido | `pedido-db` | `pedidos`, `eventos_processados`, `eventos` |
+| Pagamento | `pagamento-db` | `pagamentos`, `eventos_processados`, `eventos` |
+| Logística | `logistica-db` | `entregas`, `eventos_processados`, `eventos` |
 
-Isso evita acoplamento direto entre serviços via banco compartilhado e permite evolução independente de cada domínio.
+Nenhum serviço acessa o banco de outro — a comunicação é exclusivamente por eventos.
 
-## 6. Dashboard (futuro)
+## 10. Dashboard (Módulo 4)
 
-O **dashboard em Streamlit** (porta 8050) será a interface visual do projeto. No Módulo 2 ele exibe apenas informações estáticas. Nos módulos seguintes, ele poderá:
+O dashboard Streamlit (porta 8050) permanece inicial no Módulo 3. No **Módulo 4** será enriquecido com métricas, listagem de pedidos e monitoramento em tempo real.
 
-- Consultar o status dos serviços via `/health`
-- Exibir pedidos em andamento
-- Mostrar métricas de eventos processados
-- Permitir disparar pedidos de teste
+## 11. Evolução no Módulo 4
 
-## 7. Evolução no Módulo 3
-
-No **Módulo 3**, o projeto evoluirá para:
-
-1. Implementar endpoints de negócio (criar pedido, processar pagamento, despachar).
-2. Conectar `producer.py` e `consumer.py` aos fluxos reais de eventos.
-3. Persistir dados com **SQLAlchemy** nos bancos PostgreSQL.
-4. Completar o fluxo ponta a ponta: pedido → antifraude → pagamento → logística → catálogo.
-5. Enriquecer o dashboard com dados em tempo real.
-
-O Módulo 2 prepara toda a base para que essa integração aconteça sem retrabalho de infraestrutura.
+- Dashboard completo com métricas e status dos pedidos
+- Observabilidade (logs centralizados, tracing)
+- Testes automatizados de integração
+- Melhorias de resiliência (dead letter queues, retry policies)

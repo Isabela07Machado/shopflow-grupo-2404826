@@ -18,7 +18,7 @@ load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [mock-catalogo] %(message)s",
+    format="%(asctime)s [catalogo] %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "guest")
 
 EXCHANGE_PEDIDO = "pedido.eventos"
 EXCHANGE_CATALOGO = "catalogo.eventos"
-FILA_ENTRADA = "mock.catalogo.pedido.confirmado"
+FILA_ENTRADA = "catalogo.pedido.confirmado"
 ROUTING_KEY_ENTRADA = "pedido.confirmado"
 ROUTING_KEY_SAIDA = "estoque.atualizado"
 
@@ -42,12 +42,15 @@ EXCHANGES = [
 ]
 
 
+def _iso_agora() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
 def criar_envelope(evento_tipo: str, correlation_id: str, payload: dict | None = None) -> dict:
-    """Monta o envelope padrão de eventos do ShopFlow."""
     return {
         "evento_id": str(uuid4()),
         "evento_tipo": evento_tipo,
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "timestamp": _iso_agora(),
         "correlation_id": correlation_id,
         "versao_schema": "1.0",
         "payload": payload or {},
@@ -55,7 +58,6 @@ def criar_envelope(evento_tipo: str, correlation_id: str, payload: dict | None =
 
 
 def conectar_rabbitmq(retries: int = 30, delay: int = 2) -> pika.BlockingConnection:
-    """Conecta ao RabbitMQ com retentativas para aguardar o broker subir."""
     credenciais = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
     parametros = pika.ConnectionParameters(
         host=BROKER_HOST,
@@ -71,33 +73,15 @@ def conectar_rabbitmq(retries: int = 30, delay: int = 2) -> pika.BlockingConnect
             logger.info("Conectado ao RabbitMQ em %s:%s", BROKER_HOST, BROKER_PORT)
             return conexao
         except pika.exceptions.AMQPConnectionError as erro:
-            logger.warning(
-                "Tentativa %s/%s de conexão falhou: %s",
-                tentativa,
-                retries,
-                erro,
-            )
+            logger.warning("Tentativa %s/%s de conexão falhou: %s", tentativa, retries, erro)
             time.sleep(delay)
 
     raise RuntimeError("Não foi possível conectar ao RabbitMQ após várias tentativas.")
 
 
 def declarar_exchanges(channel: pika.channel.Channel) -> None:
-    """Declara todas as exchanges topic do projeto."""
     for exchange in EXCHANGES:
         channel.exchange_declare(exchange=exchange, exchange_type="topic", durable=True)
-        logger.info("Exchange declarada: %s", exchange)
-
-
-def configurar_consumo(channel: pika.channel.Channel) -> None:
-    """Configura fila e bind para consumir pedido.confirmado."""
-    channel.queue_declare(queue=FILA_ENTRADA, durable=True)
-    channel.queue_bind(
-        queue=FILA_ENTRADA,
-        exchange=EXCHANGE_PEDIDO,
-        routing_key=ROUTING_KEY_ENTRADA,
-    )
-    channel.basic_qos(prefetch_count=1)
 
 
 def processar_mensagem(
@@ -106,21 +90,20 @@ def processar_mensagem(
     _properties: pika.BasicProperties,
     body: bytes,
 ) -> None:
-    """Processa pedido.confirmado e publica estoque.atualizado."""
     try:
         evento = json.loads(body)
         correlation_id = evento.get("correlation_id", str(uuid4()))
         payload_entrada = evento.get("payload", {})
-        itens = payload_entrada.get("itens", [])
+        pedido_id = payload_entrada.get("pedido_id", correlation_id)
+        itens_atualizados = payload_entrada.get("itens_atualizados", 1)
 
         resposta = criar_envelope(
             evento_tipo=ROUTING_KEY_SAIDA,
             correlation_id=correlation_id,
             payload={
-                "pedido_id": payload_entrada.get("pedido_id", correlation_id),
-                "itens_atualizados": itens,
-                "origem": "mock-catalogo",
-                "mensagem": "Estoque atualizado após confirmação do pedido",
+                "pedido_id": pedido_id,
+                "itens_atualizados": itens_atualizados,
+                "atualizado_em": _iso_agora(),
             },
         )
 
@@ -135,10 +118,9 @@ def processar_mensagem(
         )
 
         logger.info(
-            "Publicado evento: %s | correlation_id=%s | payload=%s",
+            "%s publicado correlation_id=%s",
             ROUTING_KEY_SAIDA,
             correlation_id,
-            resposta["payload"],
         )
     except Exception as erro:
         logger.error("Erro ao processar mensagem: %s", erro)
@@ -147,16 +129,18 @@ def processar_mensagem(
 
 
 def main() -> None:
-    """Ponto de entrada do mock de catálogo."""
     conexao = conectar_rabbitmq()
     canal = conexao.channel()
     declarar_exchanges(canal)
-    configurar_consumo(canal)
 
-    canal.basic_consume(
+    canal.queue_declare(queue=FILA_ENTRADA, durable=True)
+    canal.queue_bind(
         queue=FILA_ENTRADA,
-        on_message_callback=processar_mensagem,
+        exchange=EXCHANGE_PEDIDO,
+        routing_key=ROUTING_KEY_ENTRADA,
     )
+    canal.basic_qos(prefetch_count=1)
+    canal.basic_consume(queue=FILA_ENTRADA, on_message_callback=processar_mensagem)
 
     logger.info("Aguardando eventos '%s' na fila %s...", ROUTING_KEY_ENTRADA, FILA_ENTRADA)
     canal.start_consuming()
